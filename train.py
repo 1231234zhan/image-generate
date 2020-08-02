@@ -77,8 +77,8 @@ class Train(object):
         self.arg_parser.add_argument('--l1-weight', type=float, default=1.0)
 
         # data preprocessing
-        self.arg_parser.add_argument('--dataset-fn', type=str, default='Teeth')
-        self.arg_parser.add_argument('--dataset-root', type=str, default='./ImageParis/')
+        self.arg_parser.add_argument('--dataset-fn', type=str, default='CelebAF')
+        self.arg_parser.add_argument('--dataset-root', type=str, default='/tmp/CelebA/')
         self.arg_parser.add_argument('--image-size', type=int, default=256)
 
         ## this part is quite flexible

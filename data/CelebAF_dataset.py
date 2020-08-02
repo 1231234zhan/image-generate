@@ -153,7 +153,7 @@ class CelebAF_Dataset(Dataset):
         
         self.data_path = os.path.join(opt.dataset_root, mode)
         if not os.path.exists(self.data_path):
-            gen_dataset(raw_dataset_root='/staff/isc20/vae-gan/landmark-cvae/CelebA/', tgt_dataset_root=opt.dataset_root)
+            gen_dataset(raw_dataset_root='/tmp/CelebA/', tgt_dataset_root=opt.dataset_root)
             check_theta(tgt_dataset_root=opt.dataset_root)
             
         self.dirs = os.listdir(self.data_path)
@@ -277,7 +277,7 @@ if __name__ == '__main__':
     import time
 
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument('--dataset-root', type=str, default='./CelebA')
+    arg_parser.add_argument('--dataset-root', type=str, default='/tmp/CelebA')
     arg_parser.add_argument('--image-size', type=int, default=256)
     opt = arg_parser.parse_args()
     dataset = CelebAF_Dataset('train', opt)
