@@ -24,7 +24,13 @@ class A_Encoder(nn.Module):
         log_std = x[:, zdim:, :, :]
         std = torch.exp(0.5 * log_std)
 
-        return mean, std, log_std, feature_maps
+        def _get_KLD_loss(a_means, a_log_stds):
+            loss = -0.5 * torch.sum(1 + a_log_stds - a_means.pow(2) - a_log_stds.exp())
+            return loss
+
+        kld_loss = _get_KLD_loss(mean, log_std)
+
+        return mean, std, log_std, feature_maps, kld_loss
 
 class S_Encoder(nn.Module):
     def __init__(self, opt):
@@ -42,6 +48,8 @@ class S_Encoder(nn.Module):
             y = layer(y)
         return y 
 
+import torchvision.models as models
+
 class Generator(nn.Module):
     def __init__(self, opt):
         super().__init__()
@@ -51,8 +59,14 @@ class Generator(nn.Module):
             nn.BatchNorm2d(self.dims[i+1]),
             nn.ReLU() if i < len(self.dims)-2 else nn.Sigmoid(),
         ) for i in range(len(self.dims)-1)])
+
+        self.perc_idx = opt.perc_idx
+        if opt.perc_net == 'vgg19':
+            self.net = models.vgg19(pretrained=True).features
+        else:
+            raise Exception('[E] such perception network not implemented!')
     
-    def forward(self, z, c, feature_maps, x_mo, m):
+    def forward(self, z, c, feature_maps, x_mo, m, ori_img):
         if feature_maps is None:
             feature_maps = [None] * (len(self.dims)-2)
 
@@ -65,7 +79,35 @@ class Generator(nn.Module):
         
         x = self.layers[-1](z)
         x = x * m + x_mo
-        return x
+
+        def _get_L1_loss(ori_images, syn_images, masks):
+            layer_weight = 1. / torch.max(torch.ones([masks.size(0)]).cuda(), torch.sum(masks, axis=[1,2,3]))
+            loss = torch.sum(torch.sum(torch.abs(ori_images-syn_images), axis=[1, 2, 3]) * layer_weight)
+            return loss
+
+        def _get_Perc_loss(ori_images, syn_images, masks):
+            o = ori_images
+            s = syn_images
+
+            loss = 0
+            cnt = 0
+            for i, layer in enumerate(self.net):
+                o = layer(o)
+                s = layer(s)
+
+                if i in self.perc_idx:
+                    layer_weight = 1. / torch.max(torch.ones([masks.size(0)]).cuda(), torch.sum(masks, axis=[1,2,3])) / 4**cnt
+                    layer_loss = torch.sum(torch.sum(torch.abs(o-s), axis=[1, 2, 3]) * layer_weight)
+                    loss += layer_loss
+
+                    cnt += 1
+                    if cnt == len(self.perc_idx): break
+            return loss
+
+        l1_loss = _get_L1_loss(ori_img, x, m)
+        perc_loss = _get_Perc_loss(ori_img, x, m)
+
+        return x, perc_loss, l1_loss
 
 class Conditional_VAE(BaseModel):
     def __init__(self, device, opt):
@@ -76,6 +118,15 @@ class Conditional_VAE(BaseModel):
         self.a_encoder = A_Encoder(opt)
         self.s_encoder = S_Encoder(opt)
         self.generator = Generator(opt)
+        # self.net = nn.DataParallel(self.net)
+        self.a_encoder = nn.DataParallel(self.a_encoder)
+        self.s_encoder = nn.DataParallel(self.s_encoder)
+        self.generator = nn.DataParallel(self.generator)
+
+        self.batch_size = opt.batch_size
+        self.perc_weight = opt.perc_weight
+        self.kl_weight = opt.kl_weight
+        self.l1_weight = opt.l1_weight
 
         nets=[self.a_encoder, self.s_encoder, self.generator]
         names=['AE', 'SE', 'G']
@@ -83,9 +134,12 @@ class Conditional_VAE(BaseModel):
         self.register_nets(nets, names, train_flags)
         self.to(self.device)
 
-    def __call__(self, x_m, x_mo, y, m):
+    def __call__(self, x_m, x_mo, y, m, ori_img):
+        
+        loss_dict= {}
+        
         # Encode appearance and structure independently
-        mean, std, log_std, feature_maps = self.a_encoder(x_m)
+        mean, std, log_std, feature_maps, kld_loss = self.a_encoder(x_m)
         c = self.s_encoder(y)
 
         # Randomly sample z~G(means, stds)
@@ -94,10 +148,14 @@ class Conditional_VAE(BaseModel):
         # print(z.shape, c.shape)
 
         # Generate images
-        r = self.generator(z, c, None if self.no_bypass else feature_maps, x_mo, m)
+        r, perc_loss, l1_loss = self.generator(z, c, None if self.no_bypass else feature_maps, x_mo, m, ori_img)
         r_m = r * m
+        loss_dict['kld_loss'] = self.kl_weight * torch.sum(kld_loss) / self.batch_size
+        loss_dict['perc_loss'] = self.perc_weight * torch.sum(perc_loss) / self.batch_size
+        loss_dict['l1_loss'] = self.l1_weight * torch.sum(l1_loss) / self.batch_size
+        loss_dict['content_loss'] = loss_dict['kld_loss'] + loss_dict['perc_loss'] + loss_dict['l1_loss']
 
-        return r, r_m, mean, log_std
+        return r, r_m, mean, log_std, loss_dict
     
 if __name__ == '__main__':
     import argparse

@@ -139,8 +139,8 @@ class Train(object):
         with torch.set_grad_enabled(is_train):
             if is_train:
                 self.optimizer.zero_grad()
-            syn_images, _, means, log_stds = self.net(ori_images_mask, ori_images_rmask, silhouettes, masks)
-            loss_dict = self.loss_computer.get_loss(ori_images, syn_images, masks, means, log_stds)
+            syn_images, _, means, log_stds, loss_dict = self.net(ori_images_mask, ori_images_rmask, silhouettes, masks, ori_images)
+            # loss_dict = self.loss_computer.get_loss(ori_images, syn_images, masks, means, log_stds)
             Content_loss = loss_dict['content_loss']
             if is_train:
                 Content_loss.backward()
