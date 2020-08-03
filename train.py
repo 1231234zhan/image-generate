@@ -44,8 +44,9 @@ class Train(object):
         # network architecture
         self.arg_parser.add_argument('--Adims', type=int, nargs='+', default=[32, 64, 128, 128, 128])
         self.arg_parser.add_argument('--zdim', type=int, default=128)
-        self.arg_parser.add_argument('--Sdims', type=int, nargs='+', default=[8, 16, 32, 32, 32])
-        self.arg_parser.add_argument('--cdim', type=int, default=32)
+        self.arg_parser.add_argument('--Sdims', type=int, nargs='+', default=[32, 64, 128, 128, 128])#[8, 16, 32, 32, 32])
+        self.arg_parser.add_argument('--cdim', type=int, default=128)
+        self.arg_parser.add_argument('--Gdims', type=int, nargs='+', default=[32, 64, 128, 128, 128])
         self.arg_parser.add_argument('--Eksize', type=int, default=5)
         self.arg_parser.add_argument('--Epadding', type=int, default=2)
         self.arg_parser.add_argument('--Gksize', type=int, default=4)
@@ -166,8 +167,8 @@ class Train(object):
         ) for m in self.modes}
 
         self.net = model_dict[self.opt.model_fn](self.device, self.opt)
-        if self.opt.print_net:
-            self.net.print_params()
+        # if self.opt.print_net:
+        self.net.print_params()
         print('[*] Model [%s] ready' % self.opt.model_fn)
 
         self.optimizer = optim.Adam(self.net.params_to_optimize(self.opt.weight_decay),

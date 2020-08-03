@@ -14,10 +14,10 @@ class A_Encoder(nn.Module):
         ) for i in range(len(self.dims)-1)])
         
     def forward(self, x):
-        feature_maps = []
+        # feature_maps = []
         for i, layer in enumerate(self.layers):
             x = layer(x)
-            if i < len(self.layers) - 1: feature_maps.append(x)
+            # if i < len(self.layers) - 1: feature_maps.append(x)
 
         zdim = self.dims[-1] // 2
         mean    = x[:, :zdim, :, :]
@@ -30,7 +30,7 @@ class A_Encoder(nn.Module):
 
         kld_loss = _get_KLD_loss(mean, log_std)
 
-        return mean, std, log_std, feature_maps, kld_loss
+        return mean, std, log_std, kld_loss
 
 class S_Encoder(nn.Module):
     def __init__(self, opt):
@@ -44,21 +44,25 @@ class S_Encoder(nn.Module):
         ) for i in range(len(self.dims)-1)])
 
     def forward(self, y):
-        for layer in self.layers:
+        feature_maps = []
+        for i, layer in enumerate(self.layers):
             y = layer(y)
-        return y 
+            if i < len(self.layers) - 1: feature_maps.append(y)
+        
+        return y, feature_maps 
 
 import torchvision.models as models
 
 class Generator(nn.Module):
     def __init__(self, opt):
         super().__init__()
-        self.dims = [opt.zdim + opt.cdim] + opt.Adims[::-1] + [3]
+        self.inDims = [opt.zdim + opt.cdim] + [2 * i for i in opt.Gdims[::-1]]
+        self.outDims = opt.Gdims[::-1] + [3]
         self.layers = nn.ModuleList([nn.Sequential(
-            nn.ConvTranspose2d(self.dims[i], self.dims[i+1], kernel_size=opt.Gksize, padding=opt.Gpadding, stride=opt.Gstride),
-            nn.BatchNorm2d(self.dims[i+1]),
-            nn.ReLU() if i < len(self.dims)-2 else nn.Sigmoid(),
-        ) for i in range(len(self.dims)-1)])
+            nn.ConvTranspose2d(self.inDims[i], self.outDims[i], kernel_size=opt.Gksize, padding=opt.Gpadding, stride=opt.Gstride),
+            nn.BatchNorm2d(self.outDims[i]),
+            nn.ReLU() if i < len(self.inDims)-1 else nn.Sigmoid(),
+        ) for i in range(len(self.inDims))])
 
         self.perc_idx = opt.perc_idx
         if opt.perc_net == 'vgg19':
@@ -73,9 +77,9 @@ class Generator(nn.Module):
         z = torch.cat([z, c], axis=1)
         for feature, layer in zip(feature_maps[::-1], self.layers[:-1]):
             z = layer(z)
-            if feature is not None:
-                assert(z.size() == feature.size())
-                z += feature
+            # if feature is not None:
+            assert(z.size() == feature.size())
+            z = torch.cat([z, feature], axis=1)
         
         x = self.layers[-1](z)
         x = x * m + x_mo
@@ -139,8 +143,8 @@ class Conditional_VAE(BaseModel):
         loss_dict= {}
         
         # Encode appearance and structure independently
-        mean, std, log_std, feature_maps, kld_loss = self.a_encoder(x_m)
-        c = self.s_encoder(y)
+        mean, std, log_std, kld_loss = self.a_encoder(x_m)
+        c, feature_maps = self.s_encoder(y)
 
         # Randomly sample z~G(means, stds)
         eps = torch.randn(mean.size()).to(self.device)
@@ -148,7 +152,7 @@ class Conditional_VAE(BaseModel):
         # print(z.shape, c.shape)
 
         # Generate images
-        r, perc_loss, l1_loss = self.generator(z, c, None if self.no_bypass else feature_maps, x_mo, m, ori_img)
+        r, perc_loss, l1_loss = self.generator(z, c, feature_maps, x_mo, m, ori_img)
         r_m = r * m
         loss_dict['kld_loss'] = self.kl_weight * torch.sum(kld_loss) / self.batch_size
         loss_dict['perc_loss'] = self.perc_weight * torch.sum(perc_loss) / self.batch_size
