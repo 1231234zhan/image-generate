@@ -104,26 +104,9 @@ class Train(object):
         if self.opt.dataset_root is None or self.opt.dataset_root == "":
             raise Exception('No dataset_root specified!')
 
-        self.opt.log_dir = 'logs/%s/' % self.opt.run_name
+        self.opt.log_dir = 'logs/%s' % self.opt.run_name
         self.continue_run  = os.path.exists(os.path.join(self.opt.log_dir, 'options_train.pkl'))
         self.continue_fold = os.path.exists(os.path.join(self.opt.log_dir, 'models', '%s-latest.pth'%self.ckpt_prefix))
-
-        # if not self.continue_run:
-        #     os.makedirs(os.path.join(self.opt.log_dir, 'models'), 0o777, exist_ok=True)
-
-        #     # Reset random seed
-        #     if self.opt.seed is None:
-        #         self.opt.seed = random.randint(0, 2**31 - 1)
-
-        #     # Save arguments
-        #     with open(os.path.join(self.opt.log_dir, 'options_train.pkl'), 'wb') as fh:
-        #         pickle.dump(self.opt, fh)
-        #     with open(os.path.join(self.opt.log_dir, 'options_train.json'), 'w') as fh:
-        #         fh.write(json.dumps(vars(self.opt), sort_keys=True, indent=4))
-        # else:
-        #     # is_continue is True
-        #     with open(os.path.join(self.opt.log_dir, 'options_train.pkl'), 'rb') as fh:
-        #         self.opt = pickle.load(fh)
 
         # random.seed(self.opt.seed)
         # np.random.seed(self.opt.seed)
@@ -139,19 +122,13 @@ class Train(object):
         ori_images_rmask = ori_images * (1-masks)
 
         syn_images, _, means, log_stds, loss_dict = self.net(ori_images_mask, ori_images_rmask, silhouettes, masks, ori_images)
-            # loss_dict = self.loss_computer.get_loss(ori_images, syn_images, masks, means, log_stds)
-            # Content_loss = loss_dict['content_loss']
-
         return syn_images
 
     def run(self):
         self.ckpt_prefix = self.checkpoint_prefix()
         self.preprocess()
-        # if self.opt.report_freq > 0:
-            # self.reporter = SummaryWriter(logdir='%s/summary' % self.opt.log_dir)
 
         self.datasets = {m: dataset_dict[self.opt.dataset_fn](m, self.opt) for m in self.modes}
-        # print('[*] Dataset [%s] ready' % self.opt.dataset_fn)
 
         self.dataloaders = {m: DataLoader(
             dataset=self.datasets[m],
@@ -162,30 +139,15 @@ class Train(object):
         ) for m in self.modes}
 
         self.net = model_dict[self.opt.model_fn](self.device, self.opt)
-        # if self.opt.print_net:
-        # self.net.print_params()
-        # print('[*] Model [%s] ready' % self.opt.model_fn)
-
-        # self.optimizer = optim.Adam(self.net.params_to_optimize(self.opt.weight_decay),
-        #                             lr=self.opt.lr,
-        #                             betas=(0.9, 0.999))
-
-        # if self.opt.lr_step > 0:
-        #     self.lr_exp_scheduler = lr_scheduler.StepLR(self.optimizer, step_size=self.opt.lr_step, gamma=self.opt.gamma)
-        # else:
-        #     self.lr_exp_scheduler = None
-
-        # self.loss_computer = LossComputer(self.device, self.opt)
-
         # load checkpoint data if possible
-        if True:
-            print('[*] Load status data from %s/models/%s-latest.pth' % (self.opt.log_dir, self.ckpt_prefix))
-            load_dir = '/staff/isc20/vae-gan/landmark-cvae/logs/2020-08-03_16-36-55/models'
-            data = self.net.load(load_dir=load_dir,
-                                 prefix=self.ckpt_prefix,
-                                 mode='best',)
-                                #  optimizer=self.optimizer,
-                                #  lr_exp_scheduler=self.lr_exp_scheduler)
+        load_dir = os.path.join(_project_folder_ ,'%s/models/' % self.opt.log_dir)
+        print('[*] Load status data from %s' % load_dir)
+        data = self.net.load(load_dir=load_dir,
+                                prefix=self.ckpt_prefix,
+                                mode='best',)
+                            #  optimizer=self.optimizer,
+                            #  lr_exp_scheduler=self.lr_exp_scheduler)
+        
         cnt = 0
         for batch_data in self.dataloaders['valid']:
             ori_images, silhouettes = batch_data
