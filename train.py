@@ -15,6 +15,7 @@ import numpy as np
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
+import cv2
 
 _project_folder_ = os.path.realpath(os.path.abspath(os.path.dirname(__file__)))
 if _project_folder_ not in sys.path:
@@ -47,6 +48,10 @@ class Train(object):
         self.arg_parser.add_argument('--Sdims', type=int, nargs='+', default=[32, 64, 128, 128, 128])#[8, 16, 32, 32, 32])
         self.arg_parser.add_argument('--cdim', type=int, default=128)
         self.arg_parser.add_argument('--Gdims', type=int, nargs='+', default=[32, 64, 128, 128, 128])
+
+        self.arg_parser.add_argument('--Ddims', type=int, nargs='+', default=[32, 64, 128, 128, 128, 128])
+        self.arg_parser.add_argument('--ddim', type=int, nargs='+', default=128)
+
         self.arg_parser.add_argument('--Eksize', type=int, default=5)
         self.arg_parser.add_argument('--Epadding', type=int, default=2)
         self.arg_parser.add_argument('--Gksize', type=int, default=4)
@@ -76,6 +81,8 @@ class Train(object):
         self.arg_parser.add_argument('--perc-weight', type=float, default=1e-2)
         self.arg_parser.add_argument('--kl-weight', type=float, default=0.5)
         self.arg_parser.add_argument('--l1-weight', type=float, default=1.0)
+        self.arg_parser.add_argument('--dis-weight', type=float, default=1.0)
+        self.arg_parser.add_argument('--gen-weight', type=float, default=1e-3)
 
         # data preprocessing
         self.arg_parser.add_argument('--dataset-fn', type=str, default='CelebAF')
@@ -139,15 +146,27 @@ class Train(object):
 
         with torch.set_grad_enabled(is_train):
             if is_train:
-                self.optimizer.zero_grad()
-            syn_images, _, means, log_stds, loss_dict = self.net(ori_images_mask, ori_images_rmask, silhouettes, masks, ori_images)
-            # loss_dict = self.loss_computer.get_loss(ori_images, syn_images, masks, means, log_stds)
+                self.gen_optimizer.zero_grad()
+
+            syn_images1, syn_images2, means, log_stds, loss_dict = self.net.calc_gen_loss(ori_images_mask, ori_images_rmask, silhouettes, masks)
             Content_loss = loss_dict['content_loss']
             if is_train:
                 Content_loss.backward()
-                self.optimizer.step()
+                self.gen_optimizer.step()
 
-        return loss_dict, syn_images
+        syn_images1 = syn_images1.detach()
+        syn_images2 = syn_images2.detach()
+        with torch.set_grad_enabled(is_train):
+            if is_train:
+                self.dis_optimizer.zero_grad()
+
+            Dis_loss = self.net.calc_dis_loss(ori_images_mask, syn_images1, syn_images2)
+            loss_dict['dis_loss'] = Dis_loss
+            if is_train:
+                Dis_loss.backward()
+                self.dis_optimizer.step()
+        
+        return loss_dict, syn_images1 + ori_images_rmask
 
     def run(self):
         self.ckpt_prefix = self.checkpoint_prefix()
@@ -171,16 +190,29 @@ class Train(object):
         self.net.print_params()
         print('[*] Model [%s] ready' % self.opt.model_fn)
 
-        self.optimizer = optim.Adam(self.net.params_to_optimize(self.opt.weight_decay),
+        gen_para = []
+        for net in [self.net.a_encoder, self.net.s_encoder, self.net.generator]:
+            gen_para.extend(net.parameters())
+
+        dis_para = self.net.discriminator.parameters()
+
+        self.gen_optimizer = optim.Adam(gen_para,
+                                    lr=self.opt.lr,
+                                    betas=(0.9, 0.999))
+
+                                    
+        self.dis_optimizer = optim.Adam(dis_para,
                                     lr=self.opt.lr,
                                     betas=(0.9, 0.999))
 
         if self.opt.lr_step > 0:
-            self.lr_exp_scheduler = lr_scheduler.StepLR(self.optimizer, step_size=self.opt.lr_step, gamma=self.opt.gamma)
+            self.gen_lr_exp_scheduler = lr_scheduler.StepLR(self.gen_optimizer, step_size=self.opt.lr_step, gamma=self.opt.gamma)
+            self.dis_lr_exp_scheduler = lr_scheduler.StepLR(self.dis_optimizer, step_size=self.opt.lr_step, gamma=self.opt.gamma)
         else:
-            self.lr_exp_scheduler = None
+            self.gen_lr_exp_scheduler = None
+            self.dis_lr_exp_scheduler = None
 
-        self.loss_computer = LossComputer(self.device, self.opt)
+        # self.loss_computer = LossComputer(self.device, self.opt)
 
         # load checkpoint data if possible
         if self.continue_fold:
@@ -188,9 +220,10 @@ class Train(object):
             data = self.net.load(load_dir='%s/models' % self.opt.log_dir,
                                  prefix=self.ckpt_prefix,
                                  mode='latest',
-                                 optimizer=self.optimizer,
-                                 lr_exp_scheduler=self.lr_exp_scheduler)
-            best_epoch, best_loss, init_epoch, records, self.optimizer, self.lr_exp_scheduler = data
+                                 optimizer=(self.gen_optimizer, self.dis_optimizer),
+                                 lr_exp_scheduler=(self.gen_lr_exp_scheduler, self.dis_lr_exp_scheduler))
+            (best_epoch, best_loss, init_epoch, records,
+            self.gen_optimizer, self.dis_optimizer, self.gen_lr_exp_scheduler, self.dis_lr_exp_scheduler)= data
         else:
             init_epoch     = 1
             best_loss      = math.inf
@@ -215,7 +248,10 @@ class Train(object):
                 KLD_loss = 0
                 Perc_loss = 0
                 L1_loss = 0
+                Dis_loss = 0
+                Gen_loss = 0
 
+                gen_img_flag = True
                 pbar = tqdm.tqdm(total=batches)
                 for batch_data in self.dataloaders[mode]:
                     loss_dict, syn_images = self.forward_batch(batch_data, is_train)
@@ -224,16 +260,34 @@ class Train(object):
                     KLD_loss += loss_dict['kld_loss'].cpu().item()
                     Perc_loss += loss_dict['perc_loss'].cpu().item()
                     L1_loss += loss_dict['l1_loss'].cpu().item()
+                    Dis_loss += loss_dict['dis_loss'].cpu().item()
+                    Gen_loss += loss_dict['gen_loss'].cpu().item()
 
                     pbar.update()
+
+                    # generate some images to see model's quality 
+                    if gen_img_flag and not is_train:
+                        gen_img_flag = False
+                        cnt = 0
+                        ori_images, _ = batch_data
+                        for ori, syn in zip(ori_images, syn_images):
+                            ori=cv2.cvtColor(ori.cpu().numpy().transpose(1,2,0)*256, cv2.COLOR_RGB2BGR)
+                            cv2.imwrite('/tmp/test_gan/ori{}.jpg'.format(cnt), ori)
+                            syn=cv2.cvtColor(syn.cpu().detach().numpy().transpose(1,2,0)*256, cv2.COLOR_RGB2BGR)
+                            cv2.imwrite('/tmp/test_gan/syn{}.jpg'.format(cnt), syn)
+
+                            cnt += 1
+
                 pbar.close()
 
                 KLD_loss        /= batches
                 Perc_loss       /= batches
                 L1_loss         /= batches
                 Content_loss    /= batches
+                Dis_loss        /= batches
+                Gen_loss        /= batches
 
-                print('[*] {} loss: {:.4f} (L1 Loss: {:.4f})'.format(mode, Content_loss, L1_loss))
+                print('[*] {}: Content loss: {:.4f} (L1 Loss: {:.4f} Gen_loss: {:.4f} Perc_loss: {:.4f} KL_loss: {:.4f}) Dis_loss: {:.4f} '.format(mode, Content_loss, L1_loss, Gen_loss, Perc_loss, KLD_loss, Dis_loss))
                 records[mode].append((Content_loss, L1_loss, Perc_loss, KLD_loss))
 
                 if epoch % self.opt.report_freq == 0 or epoch == self.opt.epochs or epoch == 1:
@@ -250,8 +304,9 @@ class Train(object):
                     best_epoch = epoch
 
             # end of epoch
-            if self.lr_exp_scheduler is not None:
-                self.lr_exp_scheduler.step()
+            if self.gen_lr_exp_scheduler is not None:
+                self.gen_lr_exp_scheduler.step()
+                self.dis_lr_exp_scheduler.step()
             
             # save ckpt model if needed
             if epoch % self.opt.save_freq == 0 or epoch == self.opt.epochs:
@@ -263,8 +318,8 @@ class Train(object):
                               best_loss=best_loss,
                               curr_epoch=epoch,
                               records=records,
-                              optimizer= self.optimizer,
-                              lr_exp_scheduler= self.lr_exp_scheduler)
+                              optimizer= (self.gen_optimizer, self.dis_optimizer),
+                              lr_exp_scheduler= (self.gen_lr_exp_scheduler, self.dis_lr_exp_scheduler))
 
             # save best model if needed
             if epoch == best_epoch:

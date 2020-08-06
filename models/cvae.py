@@ -70,7 +70,7 @@ class Generator(nn.Module):
         else:
             raise Exception('[E] such perception network not implemented!')
     
-    def forward(self, z, c, feature_maps, x_mo, m, ori_img):
+    def forward(self, z, c, feature_maps, x_m, m):
         if feature_maps is None:
             feature_maps = [None] * (len(self.dims)-2)
 
@@ -82,7 +82,7 @@ class Generator(nn.Module):
             z = torch.cat([z, feature], axis=1)
         
         x = self.layers[-1](z)
-        x = x * m + x_mo
+        x = x * m
 
         def _get_L1_loss(ori_images, syn_images, masks):
             layer_weight = 1. / torch.max(torch.ones([masks.size(0)]).cuda(), torch.sum(masks, axis=[1,2,3]))
@@ -108,10 +108,55 @@ class Generator(nn.Module):
                     if cnt == len(self.perc_idx): break
             return loss
 
-        l1_loss = _get_L1_loss(ori_img, x, m)
-        perc_loss = _get_Perc_loss(ori_img, x, m)
+        l1_loss = _get_L1_loss(x_m, x, m)
+        perc_loss = _get_Perc_loss(x_m, x, m)
 
         return x, perc_loss, l1_loss
+
+class Discriminator(nn.Module):
+    def __init__(self, opt):
+        super().__init__()
+        self.dims = [3] + opt.Ddims
+
+        img = torch.rand((opt.batch_size, 3, opt.image_size, opt.image_size))
+
+        self.layers = [nn.Sequential(
+            nn.Conv2d(self.dims[i], self.dims[i+1], kernel_size=opt.Eksize, padding=opt.Epadding),
+            nn.BatchNorm2d(self.dims[i+1]),
+            nn.LeakyReLU(),
+            nn.AvgPool2d(kernel_size=2)
+        ) for i in range(len(self.dims)-1)]
+
+        for layer in self.layers:
+            img = layer(img)
+        shape = list(img.shape)
+        size = shape[1]*shape[2]*shape[3]
+
+        self.layers = self.layers + [nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(in_features=size, out_features=opt.ddim),
+            nn.LeakyReLU(),
+        )]
+        
+        # img = self.layers[-1](img)
+        # self.mf_shape = img.shape
+
+        self.layers = self.layers + [nn.Sequential(
+            nn.Linear(in_features=opt.ddim, out_features=1),
+        )]
+
+        # img = self.layers[-1](img)
+        # self.label_shape = img.shape
+
+        self.layers = nn.ModuleList(self.layers)
+
+    def forward(self, x):
+        for i, layer in enumerate(self.layers):
+            if i == len(self.layers) - 1:
+                mean_feature = x
+            x = layer(x)
+
+        return mean_feature, x
 
 class Conditional_VAE(BaseModel):
     def __init__(self, device, opt):
@@ -122,23 +167,29 @@ class Conditional_VAE(BaseModel):
         self.a_encoder = A_Encoder(opt)
         self.s_encoder = S_Encoder(opt)
         self.generator = Generator(opt)
+        self.discriminator = Discriminator(opt)
         # self.net = nn.DataParallel(self.net)
         self.a_encoder = nn.DataParallel(self.a_encoder)
         self.s_encoder = nn.DataParallel(self.s_encoder)
         self.generator = nn.DataParallel(self.generator)
+        self.discriminator = nn.DataParallel(self.discriminator)
+
 
         self.batch_size = opt.batch_size
         self.perc_weight = opt.perc_weight
         self.kl_weight = opt.kl_weight
         self.l1_weight = opt.l1_weight
 
-        nets=[self.a_encoder, self.s_encoder, self.generator]
-        names=['AE', 'SE', 'G']
-        train_flags=[True, True, True]
+        self.dis_weight = opt.dis_weight
+        self.gen_weight = opt.gen_weight
+
+        nets=[self.a_encoder, self.s_encoder, self.generator, self.discriminator]
+        names=['AE', 'SE', 'G', 'D']
+        train_flags=[True, True, True, True]
         self.register_nets(nets, names, train_flags)
         self.to(self.device)
 
-    def __call__(self, x_m, x_mo, y, m, ori_img):
+    def calc_gen_loss(self, x_m, x_mo, y, m):
         
         loss_dict= {}
         
@@ -152,15 +203,40 @@ class Conditional_VAE(BaseModel):
         # print(z.shape, c.shape)
 
         # Generate images
-        r, perc_loss, l1_loss = self.generator(z, c, feature_maps, x_mo, m, ori_img)
-        r_m = r * m
+        r, perc_loss, l1_loss = self.generator(z, c, feature_maps, x_m, m)
+        f, _, _ = self.generator(eps, c, feature_maps, x_m, m)
+    
+        # Discriminator
+        mf_r , _ = self.discriminator(x_m) 
+        mf_f2 , _ = self.discriminator(f) 
+        gen_loss = torch.sum((mf_r - mf_f2).pow(2))
+
+        # loss_dict['dis_loss'] = self.dis_weight * dis_loss / self.batch_size
+        loss_dict['gen_loss'] = self.gen_weight * gen_loss / self.batch_size
+        # loss_dict['gen_loss'] = 0
         loss_dict['kld_loss'] = self.kl_weight * torch.sum(kld_loss) / self.batch_size
         loss_dict['perc_loss'] = self.perc_weight * torch.sum(perc_loss) / self.batch_size
         loss_dict['l1_loss'] = self.l1_weight * torch.sum(l1_loss) / self.batch_size
-        loss_dict['content_loss'] = loss_dict['kld_loss'] + loss_dict['perc_loss'] + loss_dict['l1_loss']
 
-        return r, r_m, mean, log_std, loss_dict
+        loss_dict['content_loss'] = loss_dict['kld_loss'] + loss_dict['perc_loss'] + loss_dict['l1_loss'] + loss_dict['gen_loss']
+
+        return r, f, mean, log_std, loss_dict
     
+    def calc_dis_loss(self, x_m, f1, f2):
+
+        _, label_r = self.discriminator(x_m)
+        _, label_f1 = self.discriminator(f1) 
+        _, label_f2 = self.discriminator(f2) 
+
+        get_dis_loss = nn.BCEWithLogitsLoss()
+
+        dis_loss = get_dis_loss(label_r, torch.ones_like(label_r))
+        dis_loss += get_dis_loss(label_f1, torch.zeros_like(label_r)) * 0.5
+        dis_loss += get_dis_loss(label_f2, torch.zeros_like(label_r)) * 0.5
+
+        dis_loss = self.dis_weight * dis_loss
+        return dis_loss
+
 if __name__ == '__main__':
     import argparse
     arg_parser = argparse.ArgumentParser()

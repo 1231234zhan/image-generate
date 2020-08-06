@@ -96,21 +96,25 @@ class BaseModel(object):
         return {self._net_names[i]: self._nets[i] for i in range(len(self._nets))}
 
     def save(self, save_dir, mode, prefix, best_epoch, best_loss, 
-             curr_epoch=None, records=None, optimizer=None, lr_exp_scheduler=None):
+             curr_epoch=None, records=None, optimizer=(None, None), lr_exp_scheduler=(None, None)):
         assert(mode == 'ckpt' or mode == 'best')
         state = {}
         # save nets and the best record
         for net, name in zip(self._nets, self._net_names):
             state[name] = net.state_dict()
-            
+        
+        gen_lr_exp_scheduler, dis_lr_exp_scheduler = lr_exp_scheduler
+        gen_optimizer, dis_optimizer = optimizer
         if mode == 'ckpt':
             torch.save(state, os.path.join(save_dir, '%s-epoch%d.pth' % (prefix, curr_epoch)))
             state['best_epoch']         = best_epoch
             state['best_loss']          = best_loss
             state['curr_epoch']         = curr_epoch
             state['records']            = records
-            state['optimizer']          = optimizer.state_dict()
-            state['lr_exp_scheduler']   = None if lr_exp_scheduler is None else lr_exp_scheduler.state_dict()
+            state['gen_optimizer']          = gen_optimizer.state_dict()
+            state['dis_optimizer']          = dis_optimizer.state_dict()
+            state['gen_lr_exp_scheduler']   = None if gen_lr_exp_scheduler is None else gen_lr_exp_scheduler.state_dict()
+            state['dis_lr_exp_scheduler']   = None if dis_lr_exp_scheduler is None else dis_lr_exp_scheduler.state_dict()
             torch.save(state, os.path.join(save_dir, '%s-latest.pth' % prefix))
         else:
             state['best_epoch']         = best_epoch
@@ -134,12 +138,17 @@ class BaseModel(object):
         if mode == 'best': return best_epoch, best_loss
 
         # mode == 'latest'
+        (gen_optimizer, dis_optimizer) = optimizer
+        (gen_lr_exp_scheduler, dis_lr_exp_scheduler) = lr_exp_scheduler
+
         init_epoch      = state['curr_epoch'] + 1
         records         = state['records']
-        optimizer.load_state_dict(state['optimizer'])
-        if lr_exp_scheduler is not None:
-            lr_exp_scheduler.load_state_dict(state['lr_exp_scheduler'])
-        return best_epoch, best_loss, init_epoch, records, optimizer, lr_exp_scheduler
+        gen_optimizer.load_state_dict(state['gen_optimizer'])
+        dis_optimizer.load_state_dict(state['dis_optimizer'])
+        # if lr_exp_scheduler is not None:
+        gen_lr_exp_scheduler.load_state_dict(state['gen_lr_exp_scheduler'])
+        dis_lr_exp_scheduler.load_state_dict(state['dis_lr_exp_scheduler'])
+        return best_epoch, best_loss, init_epoch, records, gen_optimizer, dis_optimizer, gen_lr_exp_scheduler, dis_lr_exp_scheduler
 
     def train_mode(self):
         for net, train_flag in zip(self._nets, self._train_flags):
