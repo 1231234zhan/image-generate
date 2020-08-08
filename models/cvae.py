@@ -84,34 +84,34 @@ class Generator(nn.Module):
         x = self.layers[-1](z)
         x = x * m
 
-        def _get_L1_loss(ori_images, syn_images, masks):
-            layer_weight = 1. / torch.max(torch.ones([masks.size(0)]).cuda(), torch.sum(masks, axis=[1,2,3]))
-            loss = torch.sum(torch.sum(torch.abs(ori_images-syn_images), axis=[1, 2, 3]) * layer_weight)
+        def _get_L1_loss(ori_images, syn_images):
+            # layer_weight = 1. / torch.max(torch.ones([masks.size(0)]).cuda(), torch.sum(masks, axis=[1,2,3]))
+            loss = torch.sum(torch.sum((ori_images-syn_images).pow(2), axis=[1, 2, 3]))
             return loss
 
-        def _get_Perc_loss(ori_images, syn_images, masks):
-            o = ori_images
-            s = syn_images
+        # def _get_Perc_loss(ori_images, syn_images, masks):
+        #     o = ori_images
+        #     s = syn_images
 
-            loss = 0
-            cnt = 0
-            for i, layer in enumerate(self.net):
-                o = layer(o)
-                s = layer(s)
+        #     loss = 0
+        #     cnt = 0
+        #     for i, layer in enumerate(self.net):
+        #         o = layer(o)
+        #         s = layer(s)
 
-                if i in self.perc_idx:
-                    layer_weight = 1. / torch.max(torch.ones([masks.size(0)]).cuda(), torch.sum(masks, axis=[1,2,3])) / 4**cnt
-                    layer_loss = torch.sum(torch.sum(torch.abs(o-s), axis=[1, 2, 3]) * layer_weight)
-                    loss += layer_loss
+        #         if i in self.perc_idx:
+        #             layer_weight = 1. / torch.max(torch.ones([masks.size(0)]).cuda(), torch.sum(masks, axis=[1,2,3])) / 4**cnt
+        #             layer_loss = torch.sum(torch.sum(torch.abs(o-s), axis=[1, 2, 3]) * layer_weight)
+        #             loss += layer_loss
 
-                    cnt += 1
-                    if cnt == len(self.perc_idx): break
-            return loss
+        #             cnt += 1
+        #             if cnt == len(self.perc_idx): break
+        #     return loss
 
-        l1_loss = _get_L1_loss(x_m, x, m)
-        perc_loss = _get_Perc_loss(x_m, x, m)
+        l1_loss = _get_L1_loss(x_m, x)
+        # perc_loss = _get_Perc_loss(x_m, x, m)
 
-        return x, perc_loss, l1_loss
+        return x, l1_loss
 
 class Discriminator(nn.Module):
     def __init__(self, opt):
@@ -138,15 +138,9 @@ class Discriminator(nn.Module):
             nn.LeakyReLU(),
         )]
         
-        # img = self.layers[-1](img)
-        # self.mf_shape = img.shape
-
         self.layers = self.layers + [nn.Sequential(
             nn.Linear(in_features=opt.ddim, out_features=1),
         )]
-
-        # img = self.layers[-1](img)
-        # self.label_shape = img.shape
 
         self.layers = nn.ModuleList(self.layers)
 
@@ -168,7 +162,7 @@ class Conditional_VAE(BaseModel):
         self.s_encoder = S_Encoder(opt)
         self.generator = Generator(opt)
         self.discriminator = Discriminator(opt)
-        # self.net = nn.DataParallel(self.net)
+
         self.a_encoder = nn.DataParallel(self.a_encoder)
         self.s_encoder = nn.DataParallel(self.s_encoder)
         self.generator = nn.DataParallel(self.generator)
@@ -183,6 +177,8 @@ class Conditional_VAE(BaseModel):
         self.dis_weight = opt.dis_weight
         self.gen_weight = opt.gen_weight
 
+        self.getBCEloss = nn.BCEWithLogitsLoss()
+
         nets=[self.a_encoder, self.s_encoder, self.generator, self.discriminator]
         names=['AE', 'SE', 'G', 'D']
         train_flags=[True, True, True, True]
@@ -190,7 +186,6 @@ class Conditional_VAE(BaseModel):
         self.to(self.device)
 
     def calc_gen_loss(self, x_m, x_mo, y, m):
-        
         loss_dict= {}
         
         # Encode appearance and structure independently
@@ -200,39 +195,34 @@ class Conditional_VAE(BaseModel):
         # Randomly sample z~G(means, stds)
         eps = torch.randn(mean.size()).to(self.device)
         z = eps * std + mean   
-        # print(z.shape, c.shape)
 
         # Generate images
-        r, perc_loss, l1_loss = self.generator(z, c, feature_maps, x_m, m)
-        f, _, _ = self.generator(eps, c, feature_maps, x_m, m)
+        x_f, l1_loss = self.generator(z, c, feature_maps, x_m, m)
+        x_p, _ = self.generator(eps, c, feature_maps, x_m, m)
     
         # Discriminator
-        mf_r , _ = self.discriminator(x_m) 
-        mf_f2 , _ = self.discriminator(f) 
-        gen_loss = torch.sum((mf_r - mf_f2).pow(2))
+        mf_x_m , lx_m = self.discriminator(x_m) 
+        mf_x_p , lx_p = self.discriminator(x_p) 
+        # gen_loss = torch.sum(torch.square(mf_x_m - mf_x_p))
+        gen_loss = self.getBCEloss(lx_p, torch.ones_like(lx_p))
 
-        # loss_dict['dis_loss'] = self.dis_weight * dis_loss / self.batch_size
-        loss_dict['gen_loss'] = self.gen_weight * gen_loss / self.batch_size
-        # loss_dict['gen_loss'] = 0
+        loss_dict['gen_loss'] = self.gen_weight * gen_loss 
         loss_dict['kld_loss'] = self.kl_weight * torch.sum(kld_loss) / self.batch_size
-        loss_dict['perc_loss'] = self.perc_weight * torch.sum(perc_loss) / self.batch_size
         loss_dict['l1_loss'] = self.l1_weight * torch.sum(l1_loss) / self.batch_size
 
-        loss_dict['content_loss'] = loss_dict['kld_loss'] + loss_dict['perc_loss'] + loss_dict['l1_loss'] + loss_dict['gen_loss']
+        loss_dict['content_loss'] = loss_dict['kld_loss'] + loss_dict['l1_loss'] + loss_dict['gen_loss']
 
-        return r, f, mean, log_std, loss_dict
+        return x_f, x_p, mean, log_std, loss_dict
     
-    def calc_dis_loss(self, x_m, f1, f2):
+    def calc_dis_loss(self, x_m, x_f, x_p):
 
         _, label_r = self.discriminator(x_m)
-        _, label_f1 = self.discriminator(f1) 
-        _, label_f2 = self.discriminator(f2) 
+        _, label_f = self.discriminator(x_f) 
+        _, label_p = self.discriminator(x_p) 
 
-        get_dis_loss = nn.BCEWithLogitsLoss()
-
-        dis_loss = get_dis_loss(label_r, torch.ones_like(label_r))
-        dis_loss += get_dis_loss(label_f1, torch.zeros_like(label_r)) * 0.5
-        dis_loss += get_dis_loss(label_f2, torch.zeros_like(label_r)) * 0.5
+        dis_loss = self.getBCEloss(label_r, torch.ones_like(label_r))
+        dis_loss += self.getBCEloss(label_f, torch.zeros_like(label_r))
+        dis_loss += self.getBCEloss(label_p, torch.zeros_like(label_r))
 
         dis_loss = self.dis_weight * dis_loss
         return dis_loss

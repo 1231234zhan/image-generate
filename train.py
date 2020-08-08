@@ -50,7 +50,7 @@ class Train(object):
         self.arg_parser.add_argument('--Gdims', type=int, nargs='+', default=[32, 64, 128, 128, 128])
 
         self.arg_parser.add_argument('--Ddims', type=int, nargs='+', default=[32, 64, 128, 128, 128, 128])
-        self.arg_parser.add_argument('--ddim', type=int, nargs='+', default=128)
+        self.arg_parser.add_argument('--ddim', type=int, nargs='+', default=1024)
 
         self.arg_parser.add_argument('--Eksize', type=int, default=5)
         self.arg_parser.add_argument('--Epadding', type=int, default=2)
@@ -79,10 +79,10 @@ class Train(object):
         self.arg_parser.add_argument('--perc-net', type=str, default='vgg19')
         self.arg_parser.add_argument('--perc-idx', type=int, nargs='+', default=[3, 8, 17])
         self.arg_parser.add_argument('--perc-weight', type=float, default=1e-2)
-        self.arg_parser.add_argument('--kl-weight', type=float, default=0.5)
-        self.arg_parser.add_argument('--l1-weight', type=float, default=1.0)
+        self.arg_parser.add_argument('--kl-weight', type=float, default=1.0)
+        self.arg_parser.add_argument('--l1-weight', type=float, default=1e-3)
         self.arg_parser.add_argument('--dis-weight', type=float, default=1.0)
-        self.arg_parser.add_argument('--gen-weight', type=float, default=1e-3)
+        self.arg_parser.add_argument('--gen-weight', type=float, default=1.0)
 
         # data preprocessing
         self.arg_parser.add_argument('--dataset-fn', type=str, default='CelebAF')
@@ -148,25 +148,25 @@ class Train(object):
             if is_train:
                 self.gen_optimizer.zero_grad()
 
-            syn_images1, syn_images2, means, log_stds, loss_dict = self.net.calc_gen_loss(ori_images_mask, ori_images_rmask, silhouettes, masks)
+            syn_images_f, syn_images_p, means, log_stds, loss_dict = self.net.calc_gen_loss(ori_images_mask, ori_images_rmask, silhouettes, masks)
             Content_loss = loss_dict['content_loss']
             if is_train:
                 Content_loss.backward()
                 self.gen_optimizer.step()
 
-        syn_images1 = syn_images1.detach()
-        syn_images2 = syn_images2.detach()
+        syn_images_f = syn_images_f.detach()
+        syn_images_p = syn_images_p.detach()
         with torch.set_grad_enabled(is_train):
             if is_train:
                 self.dis_optimizer.zero_grad()
 
-            Dis_loss = self.net.calc_dis_loss(ori_images_mask, syn_images1, syn_images2)
+            Dis_loss = self.net.calc_dis_loss(ori_images_mask, syn_images_f, syn_images_p)
             loss_dict['dis_loss'] = Dis_loss
             if is_train:
                 Dis_loss.backward()
                 self.dis_optimizer.step()
         
-        return loss_dict, syn_images1 + ori_images_rmask
+        return loss_dict, syn_images_f + ori_images_rmask
 
     def run(self):
         self.ckpt_prefix = self.checkpoint_prefix()
@@ -192,18 +192,18 @@ class Train(object):
 
         gen_para = []
         for net in [self.net.a_encoder, self.net.s_encoder, self.net.generator]:
-            gen_para.extend(net.parameters())
+            gen_para.extend(list(net.parameters()))
 
         dis_para = self.net.discriminator.parameters()
 
         self.gen_optimizer = optim.Adam(gen_para,
                                     lr=self.opt.lr,
-                                    betas=(0.9, 0.999))
+                                    betas=(0.5, 0.999))
 
                                     
         self.dis_optimizer = optim.Adam(dis_para,
                                     lr=self.opt.lr,
-                                    betas=(0.9, 0.999))
+                                    betas=(0.5, 0.999))
 
         if self.opt.lr_step > 0:
             self.gen_lr_exp_scheduler = lr_scheduler.StepLR(self.gen_optimizer, step_size=self.opt.lr_step, gamma=self.opt.gamma)
@@ -258,7 +258,7 @@ class Train(object):
 
                     Content_loss += loss_dict['content_loss'].cpu().item()
                     KLD_loss += loss_dict['kld_loss'].cpu().item()
-                    Perc_loss += loss_dict['perc_loss'].cpu().item()
+                    # Perc_loss += loss_dict['perc_loss'].cpu().item()
                     L1_loss += loss_dict['l1_loss'].cpu().item()
                     Dis_loss += loss_dict['dis_loss'].cpu().item()
                     Gen_loss += loss_dict['gen_loss'].cpu().item()
@@ -287,7 +287,7 @@ class Train(object):
                 Dis_loss        /= batches
                 Gen_loss        /= batches
 
-                print('[*] {}: Content loss: {:.4f} (L1 Loss: {:.4f} Gen_loss: {:.4f} Perc_loss: {:.4f} KL_loss: {:.4f}) Dis_loss: {:.4f} '.format(mode, Content_loss, L1_loss, Gen_loss, Perc_loss, KLD_loss, Dis_loss))
+                print('[*] {}: Content loss: {:.4f} (L1 Loss: {:.4f} Gen_loss: {:.4f} KL_loss: {:.4f}) Dis_loss: {:.4f} '.format(mode, Content_loss, L1_loss, Gen_loss, KLD_loss, Dis_loss))
                 records[mode].append((Content_loss, L1_loss, Perc_loss, KLD_loss))
 
                 if epoch % self.opt.report_freq == 0 or epoch == self.opt.epochs or epoch == 1:
