@@ -138,16 +138,25 @@ class BaseModel(object):
         if mode == 'best': return best_epoch, best_loss
 
         # mode == 'latest'
-        (gen_optimizer, dis_optimizer) = optimizer
-        (gen_lr_exp_scheduler, dis_lr_exp_scheduler) = lr_exp_scheduler
+        if optimizer is not None:
+            (gen_optimizer, dis_optimizer) = optimizer
+            gen_optimizer.load_state_dict(state['gen_optimizer'])
+            dis_optimizer.load_state_dict(state['dis_optimizer'])
+        else:
+            gen_optimizer = None
+            dis_optimizer = None
+
+        if lr_exp_scheduler is not None:
+            (gen_lr_exp_scheduler, dis_lr_exp_scheduler) = lr_exp_scheduler
+            gen_lr_exp_scheduler.load_state_dict(state['gen_lr_exp_scheduler'])
+            dis_lr_exp_scheduler.load_state_dict(state['dis_lr_exp_scheduler'])
+        else:
+            gen_lr_exp_scheduler = None
+            dis_lr_exp_scheduler = None            
 
         init_epoch      = state['curr_epoch'] + 1
         records         = state['records']
-        gen_optimizer.load_state_dict(state['gen_optimizer'])
-        dis_optimizer.load_state_dict(state['dis_optimizer'])
-        # if lr_exp_scheduler is not None:
-        gen_lr_exp_scheduler.load_state_dict(state['gen_lr_exp_scheduler'])
-        dis_lr_exp_scheduler.load_state_dict(state['dis_lr_exp_scheduler'])
+
         return best_epoch, best_loss, init_epoch, records, gen_optimizer, dis_optimizer, gen_lr_exp_scheduler, dis_lr_exp_scheduler
 
     def train_mode(self):
