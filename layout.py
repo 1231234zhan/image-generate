@@ -21,17 +21,6 @@ import torchvision.transforms.functional as TF
 
 from models.cvae import Conditional_VAE
 
-# class Layout_Dataset(Dataset):
-#     def __init__(self, imgs, masks):
-#         super().__init__()
-#         self.data = zip(imgs, masks)
-
-#     def __len__(self):
-#         return len(self.data)
-
-#     def __getitem__(self, idx):
-#         return self.da
-
 class Layout(object):
     def __init__(self):
         self.opt = self._parse_args()
@@ -87,7 +76,7 @@ class Layout(object):
 
         # data preprocessing
         self.arg_parser.add_argument('--dataset-fn', type=str, default='CelebAF')
-        self.arg_parser.add_argument('--dataset-root', type=str, default='/tmp/CelebA/')
+        self.arg_parser.add_argument('--dataset-root', type=str, default='/tmp/huge/')
         self.arg_parser.add_argument('--image-size', type=int, default=256)
 
         ## this part is quite flexible
@@ -112,20 +101,33 @@ class Layout(object):
             y_m = np.zeros_like(x)
 
             for pt in p2d.astype(np.int):
+                # print(pt)
                 cv2.circle(y, tuple(pt), 2, (255,255,255), -1)
 
+            yshift = np.array([0]*(len(p2d)+1))
+            yshift[60]=2
+            yshift[59]=5
+            yshift[58]=8
+            yshift[57]=5
+            yshift[56]=2
+            
+            yshift[61]=1
+            yshift[68]=3
+            yshift[67]=5
+            yshift[66]=3
+            yshift[65]=1
+
+            yshift[50:55] = -2
+            yshift[62:65] = -1
             for i, pt in enumerate(p2d.astype(np.int)):
-                if i+1 >=37 and i+1 <=48:
-                    pt[1] += 15
+                pt[1] += yshift[i+1]
                 cv2.circle(y_m, tuple(pt), 2, (255,255,255), -1)
-                
+            
+
+            cv2.imwrite('/tmp/layout/{}.jpg'.format(d), y_m)
+            cv2.imwrite('/tmp/layout/1-{}.jpg'.format(d), y)
             y[:, :, 2] = mask[:, :, 2]
             y_m[:, :, 2] = mask[:, :, 2]
-
-            
-            # x = np.array(x).transpose((2,0,1))
-            # y = np.array(y).transpose((2,0,1))
-            # y_m = np.array(y_m).transpose((2,0,1))
         
             x = TF.to_tensor(TF.to_pil_image(x))
             y = TF.to_tensor(TF.to_pil_image(y))
@@ -134,7 +136,7 @@ class Layout(object):
             y = (y > 0.6).float()
             y_m = (y_m > 0.6).float()
             
-            print(x.shape)
+            # print(x.shape)
             x_imgs.append(x)
             y_masks.append(y)
             y_masks_modify.append(y_m)
@@ -173,7 +175,7 @@ class Layout(object):
             mode='latest',
         )
 
-        path = '/tmp/layout'
+        path = '/tmp/huge/out'
         cnt = 0
         for batch_data in dataset:
             ori_images, _= batch_data
