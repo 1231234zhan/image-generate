@@ -40,7 +40,7 @@ class Layout(object):
         self.arg_parser.add_argument('--Gdims', type=int, nargs='+', default=[32, 64, 128, 128, 128])
 
         self.arg_parser.add_argument('--Ddims', type=int, nargs='+', default=[32, 64, 128, 128, 128, 128])
-        self.arg_parser.add_argument('--ddim', type=int, nargs='+', default=1024)
+        self.arg_parser.add_argument('--ddim', type=int, nargs='+', default=512)
 
         self.arg_parser.add_argument('--Eksize', type=int, default=5)
         self.arg_parser.add_argument('--Epadding', type=int, default=2)
@@ -76,7 +76,7 @@ class Layout(object):
 
         # data preprocessing
         self.arg_parser.add_argument('--dataset-fn', type=str, default='CelebAF')
-        self.arg_parser.add_argument('--dataset-root', type=str, default='/tmp/huge/')
+        self.arg_parser.add_argument('--dataset-root', type=str, default='/tmp/CelebA/')
         self.arg_parser.add_argument('--image-size', type=int, default=256)
 
         ## this part is quite flexible
@@ -89,60 +89,31 @@ class Layout(object):
 
         x_imgs = []
         y_masks = []
-        y_masks_modify = []
 
-        for d in dirs[:30]:
+        dirs = dirs[120:180]
+        for d in dirs:
             img = cv2.imread(os.path.join(impath, d, 'Img.jpg'))
             mask = cv2.imread(os.path.join(impath, d, 'mask.jpg'))
             p2d = np.load(os.path.join(impath, d, 'bbox-ldmk.npz'))['ldmk']
 
             x = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             y = np.zeros_like(x)
-            y_m = np.zeros_like(x)
 
             for pt in p2d.astype(np.int):
-                # print(pt)
-                cv2.circle(y, tuple(pt), 2, (255,255,255), -1)
+                cv2.circle(y, tuple(pt), 2, (255,255,255), -1)            
 
-            yshift = np.array([0]*(len(p2d)+1))
-            yshift[60]=2
-            yshift[59]=5
-            yshift[58]=8
-            yshift[57]=5
-            yshift[56]=2
-            
-            yshift[61]=1
-            yshift[68]=3
-            yshift[67]=5
-            yshift[66]=3
-            yshift[65]=1
-
-            yshift[50:55] = -2
-            yshift[62:65] = -1
-            for i, pt in enumerate(p2d.astype(np.int)):
-                pt[1] += yshift[i+1]
-                cv2.circle(y_m, tuple(pt), 2, (255,255,255), -1)
-            
-
-            cv2.imwrite('/tmp/layout/{}.jpg'.format(d), y_m)
-            cv2.imwrite('/tmp/layout/1-{}.jpg'.format(d), y)
             y[:, :, 2] = mask[:, :, 2]
-            y_m[:, :, 2] = mask[:, :, 2]
         
             x = TF.to_tensor(TF.to_pil_image(x))
             y = TF.to_tensor(TF.to_pil_image(y))
-            y_m = TF.to_tensor(TF.to_pil_image(y_m))
             
             y = (y > 0.6).float()
-            y_m = (y_m > 0.6).float()
             
-            # print(x.shape)
             x_imgs.append(x)
             y_masks.append(y)
-            y_masks_modify.append(y_m)
 
         ori_imgs = list(zip(x_imgs, y_masks))
-        mdy_imgs = list(zip(x_imgs, y_masks_modify))
+        mdy_imgs = list(zip(x_imgs, [y_masks[53]]*len(x_imgs)))
         return ori_imgs, mdy_imgs
 
     def forward_batch(self, batch_data):
@@ -154,9 +125,9 @@ class Layout(object):
         ori_images_mask  = ori_images * masks
         ori_images_rmask = ori_images * (1-masks)
 
-        syn_images_f, syn_images_p, means, log_stds, loss_dict = self.net.calc_gen_loss(ori_images_mask, ori_images_rmask, silhouettes, masks)
+        syn_images_f, means, log_stds, loss_dict = self.net.calc_gen_loss(ori_images_mask, ori_images_rmask, silhouettes, masks)
 
-        return syn_images_p + ori_images_rmask
+        return syn_images_f + ori_images_rmask
     
     def wrt_images(self, path, imgs):
         imgs=cv2.cvtColor(imgs.cpu().numpy().transpose(1,2,0)*256, cv2.COLOR_RGB2BGR)

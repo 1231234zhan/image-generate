@@ -50,7 +50,7 @@ class Train(object):
         self.arg_parser.add_argument('--Gdims', type=int, nargs='+', default=[32, 64, 128, 128, 128])
 
         self.arg_parser.add_argument('--Ddims', type=int, nargs='+', default=[32, 64, 128, 128, 128, 128])
-        self.arg_parser.add_argument('--ddim', type=int, nargs='+', default=1024)
+        self.arg_parser.add_argument('--ddim', type=int, nargs='+', default=512)
 
         self.arg_parser.add_argument('--Eksize', type=int, default=5)
         self.arg_parser.add_argument('--Epadding', type=int, default=2)
@@ -68,9 +68,9 @@ class Train(object):
         self.arg_parser.add_argument('--batch-size', type=int, default=32)
         self.arg_parser.add_argument('--weight-decay', type=float, default=-1)
         self.arg_parser.add_argument('--lr', type=float, default=1e-3)
-        self.arg_parser.add_argument('--lr-step', type=int, default=50)
-        self.arg_parser.add_argument('--gamma', type=float, default=0.8)
-        self.arg_parser.add_argument('--epochs', type=int, default=200)
+        self.arg_parser.add_argument('--lr-step', type=int, default=10)
+        self.arg_parser.add_argument('--gamma', type=float, default=0.9)
+        self.arg_parser.add_argument('--epochs', type=int, default=400)
         self.arg_parser.add_argument('--save-freq', type=int, default=10)
         self.arg_parser.add_argument('--report-freq', type=int, default=2)
         self.arg_parser.add_argument('--note', type=str, default='')
@@ -79,7 +79,7 @@ class Train(object):
         self.arg_parser.add_argument('--perc-net', type=str, default='vgg19')
         self.arg_parser.add_argument('--perc-idx', type=int, nargs='+', default=[3, 8, 17])
         self.arg_parser.add_argument('--perc-weight', type=float, default=1e-2)
-        self.arg_parser.add_argument('--kl-weight', type=float, default=1.0)
+        self.arg_parser.add_argument('--kl-weight', type=float, default=1e-3)
         self.arg_parser.add_argument('--l1-weight', type=float, default=1e-3)
         self.arg_parser.add_argument('--dis-weight', type=float, default=1.0)
         self.arg_parser.add_argument('--gen-weight', type=float, default=1.0)
@@ -148,19 +148,19 @@ class Train(object):
             if is_train:
                 self.gen_optimizer.zero_grad()
 
-            syn_images_f, syn_images_p, means, log_stds, loss_dict = self.net.calc_gen_loss(ori_images_mask, ori_images_rmask, silhouettes, masks)
+            syn_images_f, means, log_stds, loss_dict = self.net.calc_gen_loss(ori_images_mask, ori_images_rmask, silhouettes, masks)
             Content_loss = loss_dict['content_loss']
             if is_train:
                 Content_loss.backward()
                 self.gen_optimizer.step()
 
         syn_images_f = syn_images_f.detach()
-        syn_images_p = syn_images_p.detach()
+        # syn_images_p = syn_images_p.detach()
         with torch.set_grad_enabled(is_train):
             if is_train:
                 self.dis_optimizer.zero_grad()
 
-            Dis_loss = self.net.calc_dis_loss(ori_images_mask, syn_images_f, syn_images_p)
+            Dis_loss = self.net.calc_dis_loss(ori_images_mask, syn_images_f)
             loss_dict['dis_loss'] = Dis_loss
             if is_train:
                 Dis_loss.backward()

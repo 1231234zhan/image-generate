@@ -22,13 +22,16 @@ class A_Encoder(nn.Module):
         zdim = self.dims[-1] // 2
         mean    = x[:, :zdim, :, :]
         log_std = x[:, zdim:, :, :]
+
+        ## decide to abandon std part in kl-loss
+        zeros = torch.zeros_like(log_std)
         std = torch.exp(0.5 * log_std)
 
         def _get_KLD_loss(a_means, a_log_stds):
             loss = -0.5 * torch.sum(1 + a_log_stds - a_means.pow(2) - a_log_stds.exp())
             return loss
 
-        kld_loss = _get_KLD_loss(mean, log_std)
+        kld_loss = _get_KLD_loss(mean, zeros)
 
         return mean, std, log_std, kld_loss
 
@@ -86,9 +89,10 @@ class Generator(nn.Module):
 
         def _get_L1_loss(ori_images, syn_images):
             # layer_weight = 1. / torch.max(torch.ones([masks.size(0)]).cuda(), torch.sum(masks, axis=[1,2,3]))
-            loss = torch.sum(torch.sum((ori_images-syn_images).pow(2), axis=[1, 2, 3]))
+            loss = torch.sum(torch.sum(torch.abs(ori_images-syn_images), axis=[1, 2, 3]))
             return loss
-
+        
+        ## decide to abandon Prec-loss
         # def _get_Perc_loss(ori_images, syn_images, masks):
         #     o = ori_images
         #     s = syn_images
@@ -194,17 +198,15 @@ class Conditional_VAE(BaseModel):
 
         # Randomly sample z~G(means, stds)
         eps = torch.randn(mean.size()).to(self.device)
+        std = torch.ones(mean.size()).to(self.device)
         z = eps * std + mean   
 
         # Generate images
         x_f, l1_loss = self.generator(z, c, feature_maps, x_m, m)
-        x_p, _ = self.generator(eps, c, feature_maps, x_m, m)
     
         # Discriminator
-        mf_x_m , lx_m = self.discriminator(x_m) 
-        mf_x_p , lx_p = self.discriminator(x_p) 
-        # gen_loss = torch.sum(torch.square(mf_x_m - mf_x_p))
-        gen_loss = self.getBCEloss(lx_p, torch.ones_like(lx_p))
+        mf_x_f , lx_f = self.discriminator(x_f) 
+        gen_loss = self.getBCEloss(lx_f, torch.ones_like(lx_f))
 
         loss_dict['gen_loss'] = self.gen_weight * gen_loss 
         loss_dict['kld_loss'] = self.kl_weight * torch.sum(kld_loss) / self.batch_size
@@ -212,17 +214,15 @@ class Conditional_VAE(BaseModel):
 
         loss_dict['content_loss'] = loss_dict['kld_loss'] + loss_dict['l1_loss'] + loss_dict['gen_loss']
 
-        return x_f, x_p, mean, log_std, loss_dict
+        return x_f, mean, log_std, loss_dict
     
-    def calc_dis_loss(self, x_m, x_f, x_p):
+    def calc_dis_loss(self, x_m, x_f):
 
         _, label_r = self.discriminator(x_m)
         _, label_f = self.discriminator(x_f) 
-        _, label_p = self.discriminator(x_p) 
 
         dis_loss = self.getBCEloss(label_r, torch.ones_like(label_r))
         dis_loss += self.getBCEloss(label_f, torch.zeros_like(label_r))
-        dis_loss += self.getBCEloss(label_p, torch.zeros_like(label_r))
 
         dis_loss = self.dis_weight * dis_loss
         return dis_loss
